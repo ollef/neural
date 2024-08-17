@@ -16,46 +16,36 @@ struct Neuron<Signal> {
     pub weights: Vec<Signal>,
 }
 
-trait Activation {
-    type Signal;
-    fn activate(input: Self::Signal) -> Self::Signal;
+trait Activation<Signal> {
+    fn activate(input: Signal) -> Signal;
 }
 
 impl<Signal: Clone + Add<Output = Signal> + Mul<Output = Signal> + Sum> Neuron<Signal> {
-    fn forward<A: Activation<Signal = Signal>>(
-        &self,
-        inputs: impl Iterator<Item = Signal>,
-    ) -> Signal {
+    fn forward<A: Activation<Signal>>(&self, inputs: impl Iterator<Item = Signal>) -> Signal {
         A::activate(dot(inputs, self.weights.iter().cloned()) + self.bias.clone())
     }
 }
 
-struct Sigmoid<Signal>(std::marker::PhantomData<Signal>);
-struct RelU<Signal>(std::marker::PhantomData<Signal>);
+struct Sigmoid;
+struct RelU;
 
-struct LeakyRelU<Signal>(std::marker::PhantomData<Signal>);
+struct LeakyRelU;
 
-impl<Signal: One + Div<Output = Signal> + Neg<Output = Signal> + Float> Activation
-    for Sigmoid<Signal>
+impl<Signal: One + Div<Output = Signal> + Neg<Output = Signal> + Float> Activation<Signal>
+    for Sigmoid
 {
-    type Signal = Signal;
-
     fn activate(input: Signal) -> Signal {
         Signal::one() / (Signal::one() + (-input).exp())
     }
 }
 
-impl<Signal: Ord + Zero> Activation for RelU<Signal> {
-    type Signal = Signal;
-
+impl<Signal: Ord + Zero> Activation<Signal> for RelU {
     fn activate(input: Signal) -> Signal {
         input.max(Signal::zero())
     }
 }
 
-impl<Signal: Ord + Zero + Mul<Output = Signal> + FromPrimitive> Activation for LeakyRelU<Signal> {
-    type Signal = Signal;
-
+impl<Signal: Ord + Zero + Mul<Output = Signal> + FromPrimitive> Activation<Signal> for LeakyRelU {
     fn activate(input: Signal) -> Signal {
         if input > Signal::zero() {
             input
@@ -74,7 +64,7 @@ struct NeuralNetwork<Signal> {
 }
 
 impl<Signal> Layer<Signal> {
-    pub fn forward<'a, A: Activation<Signal = Signal>>(
+    pub fn forward<'a, A: Activation<Signal>>(
         &'a self,
         inputs: impl Iterator<Item = Signal> + Clone + 'a,
     ) -> impl Iterator<Item = Signal> + 'a
@@ -116,7 +106,7 @@ impl<Signal> NeuralNetwork<Signal> {
         }
     }
 
-    pub fn forward<A: Activation<Signal = Signal>>(&self, inputs: Vec<Signal>) -> Vec<Signal>
+    pub fn forward<A: Activation<Signal>>(&self, inputs: Vec<Signal>) -> Vec<Signal>
     where
         Signal: Clone + Add<Output = Signal> + Mul<Output = Signal> + Sum,
     {
