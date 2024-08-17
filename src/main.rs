@@ -1,7 +1,9 @@
 mod activation;
 
+use std::ops::SubAssign;
+
 use itertools::zip_eq;
-use ndarray::{s, Array1, Array2, ArrayView1, LinalgScalar};
+use ndarray::{s, Array1, Array2, ArrayView1, ArrayView2, Axis, LinalgScalar, ScalarOperand};
 use num_traits::{Float, FromPrimitive};
 use rand_distr::{Distribution, Normal, StandardNormal};
 
@@ -20,6 +22,7 @@ struct NeuralNetwork<Signal> {
 
 struct LayerCache<Signal> {
     outputs: Array1<Signal>,
+    error: Array1<Signal>,
 }
 
 struct NeuralNetworkCache<Signal> {
@@ -39,6 +42,24 @@ impl<Signal> Layer<Signal> {
         result.assign(&self.neuron_weights.dot(&inputs));
         result.mapv_inplace(A::function);
         cache.outputs.slice(s![..])
+    }
+
+    pub fn backpropagate<'a, A: Activation<Signal>>(
+        &mut self,
+        next_layer_neuron_weights: &ArrayView2<Signal>,
+        inputs: &ArrayView1<Signal>,
+        cache: &'a mut LayerCache<Signal>,
+        next_layer_error: &ArrayView1<Signal>,
+        learning_rate: Signal,
+    ) where
+        Signal: LinalgScalar + ScalarOperand + SubAssign,
+    {
+        let error = &mut cache.error;
+        error.assign(&next_layer_neuron_weights.t().dot(next_layer_error));
+        error.mapv_inplace(A::derivative);
+        let weight_gradient = error.dot(&inputs.insert_axis(Axis(0)));
+        self.neuron_weights
+            .assign(&(&self.neuron_weights - weight_gradient * learning_rate));
     }
 }
 
@@ -74,15 +95,25 @@ impl<Signal> NeuralNetwork<Signal> {
     pub fn forward<'a, A: Activation<Signal>>(
         &self,
         cache: &'a mut NeuralNetworkCache<Signal>,
-        inputs: &'a Array1<Signal>,
+        inputs: ArrayView1<'a, Signal>,
     ) -> ArrayView1<'a, Signal>
     where
         Signal: LinalgScalar,
     {
         zip_eq(self.layers.iter(), cache.levels.iter_mut())
-            .fold(inputs.view(), |inputs, (layer, cache)| {
+            .fold(inputs, |inputs, (layer, cache)| {
                 layer.forward::<A>(cache, inputs)
             })
+    }
+
+    pub fn backpropagate<'a, A: Activation<Signal>>(
+        &self,
+        cache: &'a mut NeuralNetworkCache<Signal>,
+        targets: ArrayView1<'a, Signal>,
+        learning_rate: Signal,
+    ) where
+        Signal: LinalgScalar,
+    {
     }
 }
 
@@ -103,6 +134,7 @@ impl<Signal> NeuralNetworkCache<Signal> {
                             Signal::zero()
                         }
                     }),
+                    error: Array1::zeros(layer.neuron_weights.nrows()),
                 })
                 .collect(),
         }
@@ -111,5 +143,6 @@ impl<Signal> NeuralNetworkCache<Signal> {
 
 fn main() {
     let network = NeuralNetwork::<f64>::new([20 * 20, 100, 100, 10].iter().cloned());
+    let cache = NeuralNetworkCache::new(&network);
     println!("Hello, world!");
 }
