@@ -1,122 +1,115 @@
-use std::{
-    iter::Sum,
-    ops::{Add, Div, Mul, Neg},
-};
+mod activation;
 
 use itertools::zip_eq;
-use num_traits::{Float, FromPrimitive, One, Zero};
+use ndarray::{s, Array1, Array2, ArrayView1, LinalgScalar};
+use num_traits::{Float, FromPrimitive};
 use rand_distr::{Distribution, Normal, StandardNormal};
 
-pub fn dot<T: Mul<Output = T> + Sum>(a: impl Iterator<Item = T>, b: impl Iterator<Item = T>) -> T {
-    zip_eq(a, b).map(|(x, y)| x * y).sum()
-}
-
-struct Neuron<Signal> {
-    pub bias: Signal,
-    pub weights: Vec<Signal>,
-}
-
 trait Activation<Signal> {
-    fn activate(input: Signal) -> Signal;
-}
-
-impl<Signal: Clone + Add<Output = Signal> + Mul<Output = Signal> + Sum> Neuron<Signal> {
-    fn forward<A: Activation<Signal>>(&self, inputs: impl Iterator<Item = Signal>) -> Signal {
-        A::activate(dot(inputs, self.weights.iter().cloned()) + self.bias.clone())
-    }
-}
-
-struct Sigmoid;
-struct RelU;
-
-struct LeakyRelU;
-
-impl<Signal: One + Div<Output = Signal> + Neg<Output = Signal> + Float> Activation<Signal>
-    for Sigmoid
-{
-    fn activate(input: Signal) -> Signal {
-        Signal::one() / (Signal::one() + (-input).exp())
-    }
-}
-
-impl<Signal: Ord + Zero> Activation<Signal> for RelU {
-    fn activate(input: Signal) -> Signal {
-        input.max(Signal::zero())
-    }
-}
-
-impl<Signal: Ord + Zero + Mul<Output = Signal> + FromPrimitive> Activation<Signal> for LeakyRelU {
-    fn activate(input: Signal) -> Signal {
-        if input > Signal::zero() {
-            input
-        } else {
-            Signal::from_f64(0.01).unwrap() * input
-        }
-    }
+    fn function(input: Signal) -> Signal;
+    fn derivative(input: Signal) -> Signal;
 }
 
 struct Layer<Signal> {
-    pub neurons: Vec<Neuron<Signal>>,
+    pub neuron_weights: Array2<Signal>,
 }
 
 struct NeuralNetwork<Signal> {
     pub layers: Vec<Layer<Signal>>,
 }
 
+struct LayerCache<Signal> {
+    outputs: Array1<Signal>,
+}
+
+struct NeuralNetworkCache<Signal> {
+    levels: Vec<LayerCache<Signal>>,
+}
+
 impl<Signal> Layer<Signal> {
     pub fn forward<'a, A: Activation<Signal>>(
-        &'a self,
-        inputs: impl Iterator<Item = Signal> + Clone + 'a,
-    ) -> impl Iterator<Item = Signal> + 'a
+        &self,
+        cache: &'a mut LayerCache<Signal>,
+        inputs: ArrayView1<Signal>,
+    ) -> ArrayView1<'a, Signal>
     where
-        Signal: Clone + Add<Output = Signal> + Mul<Output = Signal> + Sum,
+        Signal: LinalgScalar,
     {
-        self.neurons
-            .iter()
-            .map(move |neuron| neuron.forward::<A>(inputs.clone()))
+        let mut result = cache.outputs.slice_mut(s![..-1]);
+        result.assign(&self.neuron_weights.dot(&inputs));
+        result.mapv_inplace(A::function);
+        cache.outputs.slice(s![..])
     }
 }
 
 impl<Signal> NeuralNetwork<Signal> {
-    pub fn new(layer_input_sizes: impl Iterator<Item = usize> + Clone) -> Self
+    pub fn new(layer_sizes: impl Iterator<Item = usize> + Clone) -> Self
     where
-        Signal: Zero + One + Float + FromPrimitive + Div<Output = Signal> + Mul<Output = Signal>,
+        Signal: LinalgScalar + FromPrimitive + Float,
         StandardNormal: Distribution<Signal>,
     {
         let normal = Normal::new(Signal::zero(), Signal::one()).unwrap();
         let two = Signal::one() + Signal::one();
         Self {
-            layers: layer_input_sizes
+            layers: layer_sizes
                 .clone()
-                .zip(layer_input_sizes.skip(1))
+                .zip(layer_sizes.skip(1))
                 .map(|(input_size, output_size)| Layer {
-                    neurons: (0..output_size)
-                        .map(|_| Neuron {
-                            weights: (0..input_size)
-                                .map(|_| {
-                                    normal.sample(&mut rand::thread_rng())
-                                        * (two / Signal::from_usize(input_size).unwrap()).sqrt()
-                                })
-                                .collect(),
-                            bias: Signal::zero(),
-                        })
-                        .collect(),
+                    neuron_weights: Array2::from_shape_fn(
+                        (output_size, input_size + 1),
+                        |(_, col)| {
+                            if col == input_size {
+                                Signal::zero()
+                            } else {
+                                normal.sample(&mut rand::thread_rng())
+                                    * (two / Signal::from_usize(input_size).unwrap()).sqrt()
+                            }
+                        },
+                    ),
                 })
                 .collect(),
         }
     }
 
-    pub fn forward<A: Activation<Signal>>(&self, inputs: Vec<Signal>) -> Vec<Signal>
+    pub fn forward<'a, A: Activation<Signal>>(
+        &self,
+        cache: &'a mut NeuralNetworkCache<Signal>,
+        inputs: &'a Array1<Signal>,
+    ) -> ArrayView1<'a, Signal>
     where
-        Signal: Clone + Add<Output = Signal> + Mul<Output = Signal> + Sum,
+        Signal: LinalgScalar,
     {
-        self.layers.iter().fold(inputs, |inputs, layer| {
-            layer.forward::<A>(inputs.iter().cloned()).collect()
-        })
+        zip_eq(self.layers.iter(), cache.levels.iter_mut())
+            .fold(inputs.view(), |inputs, (layer, cache)| {
+                layer.forward::<A>(cache, inputs)
+            })
+    }
+}
+
+impl<Signal> NeuralNetworkCache<Signal> {
+    pub fn new(network: &NeuralNetwork<Signal>) -> Self
+    where
+        Signal: LinalgScalar,
+    {
+        Self {
+            levels: network
+                .layers
+                .iter()
+                .map(|layer| LayerCache {
+                    outputs: Array1::from_shape_fn(layer.neuron_weights.nrows() + 1, |i| {
+                        if i == layer.neuron_weights.nrows() {
+                            Signal::one()
+                        } else {
+                            Signal::zero()
+                        }
+                    }),
+                })
+                .collect(),
+        }
     }
 }
 
 fn main() {
-    let network = NeuralNetwork::<f32>::new([20 * 20, 100, 10].iter().cloned());
+    let network = NeuralNetwork::<f64>::new([20 * 20, 100, 100, 10].iter().cloned());
     println!("Hello, world!");
 }
