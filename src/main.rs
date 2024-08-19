@@ -1,6 +1,6 @@
 mod activation;
 
-use std::ops::SubAssign;
+use std::ops::{Sub, SubAssign};
 
 use itertools::zip_eq;
 use ndarray::{s, Array1, Array2, ArrayView1, ArrayView2, Axis, LinalgScalar, ScalarOperand};
@@ -21,45 +21,48 @@ struct NeuralNetwork<Signal> {
 }
 
 struct LayerCache<Signal> {
-    outputs: Array1<Signal>,
-    error: Array1<Signal>,
+    outputs_1: Array1<Signal>,
+    error_1: Array1<Signal>,
 }
 
 struct NeuralNetworkCache<Signal> {
-    levels: Vec<LayerCache<Signal>>,
+    layers: Vec<LayerCache<Signal>>,
 }
 
 impl<Signal> Layer<Signal> {
     pub fn forward<'a, A: Activation<Signal>>(
         &self,
         cache: &'a mut LayerCache<Signal>,
-        inputs: ArrayView1<Signal>,
+        inputs_1: ArrayView1<Signal>,
     ) -> ArrayView1<'a, Signal>
     where
         Signal: LinalgScalar,
     {
-        let mut result = cache.outputs.slice_mut(s![..-1]);
-        result.assign(&self.neuron_weights.dot(&inputs));
-        result.mapv_inplace(A::function);
-        cache.outputs.slice(s![..])
+        let mut outputs = cache.outputs_1.slice_mut(s![..-1]);
+        outputs.assign(&self.neuron_weights.dot(&inputs_1));
+        outputs.mapv_inplace(A::function);
+        cache.outputs_1.slice(s![..])
     }
 
-    pub fn backpropagate<'a, A: Activation<Signal>>(
+    pub fn backpropagate<A: Activation<Signal>>(
         &mut self,
+        cache: &mut LayerCache<Signal>,
+        inputs_1: &ArrayView1<Signal>,
         next_layer_neuron_weights: &ArrayView2<Signal>,
-        inputs: &ArrayView1<Signal>,
-        cache: &'a mut LayerCache<Signal>,
-        next_layer_error: &ArrayView1<Signal>,
+        next_layer_error1: &ArrayView1<Signal>,
         learning_rate: Signal,
     ) where
-        Signal: LinalgScalar + ScalarOperand + SubAssign,
+        Signal: LinalgScalar + ScalarOperand,
     {
-        let error = &mut cache.error;
-        error.assign(&next_layer_neuron_weights.t().dot(next_layer_error));
+        let mut error_1 = cache.error_1.slice_mut(s![..]);
+        error_1.assign(&next_layer_neuron_weights.t().dot(next_layer_error1));
+        let mut error = error_1.slice_mut(s![..-1]);
         error.mapv_inplace(A::derivative);
-        let weight_gradient = error.dot(&inputs.insert_axis(Axis(0)));
+        let weight_gradient = error_1
+            .insert_axis(Axis(0))
+            .dot(&inputs_1.insert_axis(Axis(1)));
         self.neuron_weights
-            .assign(&(&self.neuron_weights - weight_gradient * learning_rate));
+            .assign(&(&self.neuron_weights - &weight_gradient.t() * learning_rate));
     }
 }
 
@@ -95,25 +98,68 @@ impl<Signal> NeuralNetwork<Signal> {
     pub fn forward<'a, A: Activation<Signal>>(
         &self,
         cache: &'a mut NeuralNetworkCache<Signal>,
-        inputs: ArrayView1<'a, Signal>,
+        inputs_1: ArrayView1<'a, Signal>,
     ) -> ArrayView1<'a, Signal>
     where
         Signal: LinalgScalar,
     {
-        zip_eq(self.layers.iter(), cache.levels.iter_mut())
-            .fold(inputs, |inputs, (layer, cache)| {
+        zip_eq(self.layers.iter(), cache.layers.iter_mut())
+            .fold(inputs_1, |inputs, (layer, cache)| {
                 layer.forward::<A>(cache, inputs)
             })
     }
 
-    pub fn backpropagate<'a, A: Activation<Signal>>(
-        &self,
-        cache: &'a mut NeuralNetworkCache<Signal>,
-        targets: ArrayView1<'a, Signal>,
+    pub fn backpropagate<A: Activation<Signal>>(
+        &mut self,
+        cache: &mut NeuralNetworkCache<Signal>,
+        inputs_1: &ArrayView1<Signal>,
+        expected_outputs: &ArrayView1<Signal>,
         learning_rate: Signal,
     ) where
-        Signal: LinalgScalar,
+        Signal: LinalgScalar + ScalarOperand,
     {
+        let outputs = cache.layers.last().unwrap().outputs_1.slice(s![..-1]);
+        let error_1 = Array1::from_shape_fn(outputs.len() + 1, |i| {
+            if i == outputs.len() {
+                Signal::zero()
+            } else {
+                expected_outputs[i] - outputs[i]
+            }
+        });
+        let output_neuron_weights = Array2::from_elem(
+            (
+                self.layers.last().unwrap().neuron_weights.nrows(),
+                self.layers.last().unwrap().neuron_weights.nrows() + 1,
+            ),
+            Signal::one(),
+        );
+
+        for i in (0..self.layers.len()).rev() {
+            let (_, [layer, post_layers @ ..]) = self.layers.split_at_mut(i) else {
+                panic!("Couldn't split layers");
+            };
+            let (pre_caches, [layer_cache, post_caches @ ..]) = cache.layers.split_at_mut(i) else {
+                panic!("Couldn't split cache layers");
+            };
+            let inputs_1 = pre_caches.last().map_or(inputs_1.slice(s![..]), |cache| {
+                cache.outputs_1.slice(s![..])
+            });
+            let next_layer_neuron_weights = post_layers
+                .first()
+                .map_or(output_neuron_weights.slice(s![.., ..]), |layer| {
+                    layer.neuron_weights.slice(s![.., ..])
+                });
+            let next_layer_error1 = post_caches
+                .first()
+                .map_or(error_1.slice(s![..]), |cache| cache.error_1.slice(s![..]));
+            layer.backpropagate::<A>(
+                layer_cache,
+                &inputs_1,
+                &next_layer_neuron_weights,
+                &next_layer_error1,
+                learning_rate,
+            )
+        }
     }
 }
 
@@ -123,18 +169,18 @@ impl<Signal> NeuralNetworkCache<Signal> {
         Signal: LinalgScalar,
     {
         Self {
-            levels: network
+            layers: network
                 .layers
                 .iter()
                 .map(|layer| LayerCache {
-                    outputs: Array1::from_shape_fn(layer.neuron_weights.nrows() + 1, |i| {
+                    outputs_1: Array1::from_shape_fn(layer.neuron_weights.nrows() + 1, |i| {
                         if i == layer.neuron_weights.nrows() {
                             Signal::one()
                         } else {
                             Signal::zero()
                         }
                     }),
-                    error: Array1::zeros(layer.neuron_weights.nrows()),
+                    error_1: Array1::zeros(layer.neuron_weights.nrows() + 1),
                 })
                 .collect(),
         }
