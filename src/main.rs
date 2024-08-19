@@ -49,13 +49,13 @@ impl<Signal> Layer<Signal> {
         cache: &mut LayerCache<Signal>,
         inputs_1: &ArrayView1<Signal>,
         next_layer_neuron_weights: &ArrayView2<Signal>,
-        next_layer_error1: &ArrayView1<Signal>,
+        next_layer_error_1: &ArrayView1<Signal>,
         learning_rate: Signal,
     ) where
         Signal: LinalgScalar + ScalarOperand,
     {
         let mut error_1 = cache.error_1.slice_mut(s![..]);
-        error_1.assign(&next_layer_neuron_weights.t().dot(next_layer_error1));
+        error_1.assign(&next_layer_neuron_weights.t().dot(next_layer_error_1));
         let mut error = error_1.slice_mut(s![..-1]);
         error.mapv_inplace(A::derivative);
         let weight_gradient = error_1
@@ -149,14 +149,14 @@ impl<Signal> NeuralNetwork<Signal> {
                 .map_or(output_neuron_weights.slice(s![.., ..]), |layer| {
                     layer.neuron_weights.slice(s![.., ..])
                 });
-            let next_layer_error1 = post_caches
+            let next_layer_error_1 = post_caches
                 .first()
                 .map_or(error_1.slice(s![..]), |cache| cache.error_1.slice(s![..]));
             layer.backpropagate::<A>(
                 layer_cache,
                 &inputs_1,
                 &next_layer_neuron_weights,
-                &next_layer_error1,
+                &next_layer_error_1,
                 learning_rate,
             )
         }
