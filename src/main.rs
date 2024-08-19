@@ -1,6 +1,5 @@
 mod activation;
-
-use std::ops::{Sub, SubAssign};
+mod mnist;
 
 use itertools::zip_eq;
 use ndarray::{s, Array1, Array2, ArrayView1, ArrayView2, Axis, LinalgScalar, ScalarOperand};
@@ -187,8 +186,13 @@ impl<Signal> NeuralNetworkCache<Signal> {
     }
 }
 
-fn main() {
+fn main() -> Result<(), std::io::Error> {
     let network = NeuralNetwork::<f64>::new([20 * 20, 100, 100, 10].iter().cloned());
     let cache = NeuralNetworkCache::new(&network);
-    println!("Hello, world!");
+    let images = mnist::Image::<f64>::load("train")?;
+    println!("{:?}", images.len());
+    for image in images.iter().take(10) {
+        println!("{}", image);
+    }
+    Ok(())
 }
