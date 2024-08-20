@@ -10,6 +10,6 @@ data/%: data/%.gz
 .PHONY: all
 all: $(DATA_FILES)
 
-.PHONY: all
+.PHONY: run
 run: $(DATA_FILES)
 	cargo run --release
