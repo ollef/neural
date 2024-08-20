@@ -60,12 +60,10 @@ where
         let shades = [" ", "░", "▒", "▓", "█"];
         writeln!(
             f,
-            "{}{}{}{}{}",
-            "┌",
+            "┌{}{}{}┐",
             "─".repeat(13),
             self.classification,
             "─".repeat(14),
-            "┐"
         )?;
         for (i, pixel) in self.image.iter().enumerate() {
             if i % 28 == 0 {
@@ -82,7 +80,7 @@ where
                 writeln!(f, "│")?;
             }
         }
-        writeln!(f, "{}{}{}", "└", "─".repeat(28), "┘")?;
+        write!(f, "└{}┘", "─".repeat(28))?;
         Ok(())
     }
 }
